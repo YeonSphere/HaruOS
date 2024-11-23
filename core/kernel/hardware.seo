@@ -1,0 +1,280 @@
+// NanoCore Hardware Interface
+// Direct hardware access with Linux firmware compatibility
+
+// Hardware interface
+struct Hardware {
+    // CPU management
+    cpus: StaticVec<CPU, CONFIG.MAX_CPUS>
+    
+    // Device management
+    devices: StaticVec<Device, CONFIG.MAX_DEVICES>
+    
+    // Firmware interface
+    firmware: LinuxFirmware
+    
+    // Interrupt management
+    irq_handlers: [fn(u32) -> Result<(), Error>; 256]
+}
+
+// CPU state
+struct CPU {
+    id: u8
+    active: bool
+    frequency: u32
+    temperature: u32
+}
+
+// Device structure
+struct Device {
+    id: u16
+    type: DeviceType
+    base_addr: u64
+    irq: u32
+    dma: bool
+}
+
+// Device types
+enum DeviceType {
+    Timer
+    Network
+    Storage
+    Display
+    Input
+    Audio
+    Other
+}
+
+// Linux firmware interface
+struct LinuxFirmware {
+    // Firmware tables
+    acpi: *const ACPI
+    smbios: *const SMBIOS
+    
+    // Device tree
+    dtb: *const DTB
+    
+    // PCI configuration
+    pci: *const PCIConfig
+}
+
+impl Hardware {
+    // Initialize hardware
+    fn init() -> Result<Hardware, Error> {
+        // Map firmware tables
+        let firmware = map_linux_firmware()?
+        
+        // Initialize CPUs
+        let cpus = detect_cpus()?
+        
+        // Initialize devices
+        let devices = detect_devices(firmware)?
+        
+        // Set up interrupt handlers
+        let irq_handlers = setup_interrupts()?
+        
+        Ok(Hardware {
+            cpus,
+            devices,
+            firmware,
+            irq_handlers
+        })
+    }
+    
+    // Get current CPU
+    #[inline(always)]
+    fn current_cpu(&self) -> usize {
+        unsafe {
+            let id: u32;
+            asm!("rdtscp", out("eax") id);
+            (id & 0xFF) as usize
+        }
+    }
+    
+    // Direct device access
+    #[inline(always)]
+    fn access_device(&mut self, device: u16, args: &[u64]) -> Result<u64, Error> {
+        if let Some(dev) = self.devices.get(device as usize) {
+            match dev.type {
+                DeviceType::Timer -> self.access_timer(dev, args),
+                DeviceType::Network -> self.access_network(dev, args),
+                DeviceType::Storage -> self.access_storage(dev, args),
+                DeviceType::Display -> self.access_display(dev, args),
+                DeviceType::Input -> self.access_input(dev, args),
+                DeviceType::Audio -> self.access_audio(dev, args),
+                DeviceType::Other => self.access_other(dev, args)
+            }
+        } else {
+            Err(Error::InvalidDevice)
+        }
+    }
+    
+    // Handle device interrupt
+    #[inline(always)]
+    fn handle_device_irq(&self, irq: u32) -> Result<(), Error> {
+        if let Some(handler) = self.irq_handlers.get(irq as usize) {
+            handler(irq)
+        } else {
+            Ok(()) // Ignore unknown interrupts
+        }
+    }
+    
+    // Direct timer access
+    #[inline(always)]
+    fn access_timer(&mut self, dev: &Device, args: &[u64]) -> Result<u64, Error> {
+        unsafe {
+            // Direct hardware register access
+            let addr = dev.base_addr as *mut u32;
+            match args[0] {
+                TIMER_READ -> Ok(*addr as u64),
+                TIMER_WRITE -> {
+                    *addr = args[1] as u32;
+                    Ok(0)
+                },
+                _ -> Err(Error::InvalidOperation)
+            }
+        }
+    }
+    
+    // Direct network access
+    #[inline(always)]
+    fn access_network(&mut self, dev: &Device, args: &[u64]) -> Result<u64, Error> {
+        if dev.dma {
+            // Use DMA for large transfers
+            self.setup_dma(dev, args)
+        } else {
+            // Direct PIO
+            self.pio_transfer(dev, args)
+        }
+    }
+    
+    // Direct storage access
+    #[inline(always)]
+    fn access_storage(&mut self, dev: &Device, args: &[u64]) -> Result<u64, Error> {
+        unsafe {
+            // Map device registers
+            let regs = dev.base_addr as *mut StorageRegs;
+            
+            match args[0] {
+                STORAGE_READ -> {
+                    (*regs).command = CMD_READ;
+                    (*regs).address = args[1];
+                    (*regs).length = args[2];
+                    Ok(0)
+                },
+                STORAGE_WRITE -> {
+                    (*regs).command = CMD_WRITE;
+                    (*regs).address = args[1];
+                    (*regs).length = args[2];
+                    (*regs).data = args[3];
+                    Ok(0)
+                },
+                _ -> Err(Error::InvalidOperation)
+            }
+        }
+    }
+    
+    // DMA setup
+    #[inline(always)]
+    fn setup_dma(&mut self, dev: &Device, args: &[u64]) -> Result<u64, Error> {
+        unsafe {
+            // Configure DMA controller
+            let dma = dev.base_addr as *mut DMARegs;
+            (*dma).source = args[1];
+            (*dma).dest = args[2];
+            (*dma).length = args[3];
+            (*dma).control = DMA_START;
+            Ok(0)
+        }
+    }
+    
+    // PIO transfer
+    #[inline(always)]
+    fn pio_transfer(&mut self, dev: &Device, args: &[u64]) -> Result<u64, Error> {
+        unsafe {
+            // Direct port I/O
+            let port = dev.base_addr as u16;
+            match args[0] {
+                PIO_IN -> {
+                    let value: u32;
+                    asm!("in eax, dx", out("eax") value, in("dx") port);
+                    Ok(value as u64)
+                },
+                PIO_OUT -> {
+                    asm!("out dx, eax", in("dx") port, in("eax") args[1]);
+                    Ok(0)
+                },
+                _ -> Err(Error::InvalidOperation)
+            }
+        }
+    }
+}
+
+// Map Linux firmware tables
+fn map_linux_firmware() -> Result<LinuxFirmware, Error> {
+    unsafe {
+        // Map ACPI tables
+        let acpi = *(0x1000 as *const *const ACPI);
+        
+        // Map SMBIOS
+        let smbios = *(0x2000 as *const *const SMBIOS);
+        
+        // Map device tree
+        let dtb = *(0x3000 as *const *const DTB);
+        
+        // Map PCI config
+        let pci = *(0x4000 as *const *const PCIConfig);
+        
+        Ok(LinuxFirmware {
+            acpi,
+            smbios,
+            dtb,
+            pci
+        })
+    }
+}
+
+// Detect available CPUs
+fn detect_cpus() -> Result<StaticVec<CPU, CONFIG.MAX_CPUS>, Error> {
+    let mut cpus = StaticVec::new();
+    
+    unsafe {
+        // Read CPUID information
+        let mut id: u32;
+        asm!("cpuid", 
+            out("eax") id,
+            in("eax") 1
+        );
+        
+        let count = ((id >> 16) & 0xFF) + 1;
+        for i in 0..count.min(CONFIG.MAX_CPUS as u32) {
+            cpus.push(CPU {
+                id: i as u8,
+                active: true,
+                frequency: get_cpu_freq(i),
+                temperature: get_cpu_temp(i)
+            })?;
+        }
+    }
+    
+    Ok(cpus)
+}
+
+// Get CPU frequency
+#[inline(always)]
+fn get_cpu_freq(cpu: u32) -> u32 {
+    unsafe {
+        let freq: u32;
+        asm!("rdmsr", out("eax") freq, in("ecx") 0x198);
+        freq
+    }
+}
+
+// Get CPU temperature
+#[inline(always)]
+fn get_cpu_temp(cpu: u32) -> u32 {
+    unsafe {
+        let temp: u32;
+        asm!("rdmsr", out("eax") temp, in("ecx") 0x19C);
+        temp
+    }
+}

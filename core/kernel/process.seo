@@ -1,0 +1,224 @@
+// HaruOS Process Scheduler
+// Minimal process management implementation
+
+// Process states
+enum ProcessState {
+    Ready
+    Running
+    Blocked
+    Terminated
+}
+
+// Process structure
+struct Process {
+    pid: u32
+    state: ProcessState
+    context: Context
+    stack: u64
+    stack_size: u64
+}
+
+// CPU context
+struct Context {
+    registers: [u64; 16]
+    flags: u64
+    ip: u64
+    sp: u64
+}
+
+// Process scheduler
+struct Scheduler {
+    processes: Vec<Process>
+    current: u32
+    next_pid: u32
+}
+
+impl Scheduler {
+    // Initialize scheduler
+    fn init() -> Result<Scheduler, Error> {
+        Ok(Scheduler {
+            processes: Vec::new(),
+            current: 0,
+            next_pid: 1
+        })
+    }
+    
+    // Create new process
+    fn create(&mut self, entry: u64) -> Result<u32, Error> {
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        
+        // Allocate stack
+        let stack_size = 4096;
+        let stack = allocate_stack(stack_size)?;
+        
+        // Create process
+        let process = Process {
+            pid,
+            state: ProcessState::Ready,
+            context: Context {
+                registers: [0; 16],
+                flags: 0,
+                ip: entry,
+                sp: stack + stack_size
+            },
+            stack,
+            stack_size
+        };
+        
+        self.processes.push(process);
+        Ok(pid)
+    }
+    
+    // Exit process
+    fn exit(&mut self, pid: u32) -> Result<(), Error> {
+        if let Some(process) = self.get_process_mut(pid) {
+            process.state = ProcessState::Terminated;
+            
+            // Free stack
+            free_stack(process.stack)?;
+            
+            Ok(())
+        } else {
+            Err(Error::InvalidProcess)
+        }
+    }
+    
+    // Start scheduler
+    fn start(&mut self) -> Result<(), Error> {
+        // Enable timer interrupt
+        enable_timer_interrupt()?;
+        
+        // Start first process
+        if let Some(process) = self.processes.first() {
+            self.current = process.pid;
+            self.switch_to(process.pid)?;
+        }
+        
+        Ok(())
+    }
+    
+    // Timer tick
+    fn tick(&mut self) -> Result<(), Error> {
+        // Save current context
+        self.save_context()?;
+        
+        // Find next runnable process
+        let next_pid = self.find_next_runnable();
+        
+        // Switch to next process
+        self.switch_to(next_pid)?;
+        
+        Ok(())
+    }
+    
+    // Find next runnable process
+    fn find_next_runnable(&self) -> u32 {
+        let mut next = self.current;
+        
+        for _ in 0..self.processes.len() {
+            next = (next + 1) % self.processes.len() as u32;
+            
+            if let Some(process) = self.get_process(next) {
+                if process.state == ProcessState::Ready {
+                    return process.pid;
+                }
+            }
+        }
+        
+        self.current
+    }
+    
+    // Switch to process
+    fn switch_to(&mut self, pid: u32) -> Result<(), Error> {
+        if let Some(process) = self.get_process_mut(pid) {
+            process.state = ProcessState::Running;
+            self.current = pid;
+            
+            // Load context
+            unsafe {
+                load_context(&process.context);
+            }
+            
+            Ok(())
+        } else {
+            Err(Error::InvalidProcess)
+        }
+    }
+    
+    // Get process by PID
+    fn get_process(&self, pid: u32) -> Option<&Process> {
+        self.processes.iter().find(|p| p.pid == pid)
+    }
+    
+    // Get mutable process by PID
+    fn get_process_mut(&mut self, pid: u32) -> Option<&mut Process> {
+        self.processes.iter_mut().find(|p| p.pid == pid)
+    }
+    
+    // Save current context
+    fn save_context(&mut self) -> Result<(), Error> {
+        if let Some(process) = self.get_process_mut(self.current) {
+            unsafe {
+                save_context(&mut process.context);
+            }
+            Ok(())
+        } else {
+            Err(Error::InvalidProcess)
+        }
+    }
+}
+
+// Allocate stack
+fn allocate_stack(size: u64) -> Result<u64, Error> {
+    // TODO: Implement actual stack allocation
+    Ok(0x1000)
+}
+
+// Free stack
+fn free_stack(addr: u64) -> Result<(), Error> {
+    // TODO: Implement actual stack deallocation
+    Ok(())
+}
+
+// Load CPU context
+unsafe fn load_context(context: &Context) {
+    asm!(
+        "mov rax, [{0} + 0]",
+        "mov rbx, [{0} + 8]",
+        "mov rcx, [{0} + 16]",
+        "mov rdx, [{0} + 24]",
+        "mov rsi, [{0} + 32]",
+        "mov rdi, [{0} + 40]",
+        "mov rsp, [{0} + 48]",
+        "mov rbp, [{0} + 56]",
+        "push [{0} + 128]", // flags
+        "popf",
+        "jmp [{0} + 136]", // ip
+        in(reg) context as *const Context
+    );
+}
+
+// Save CPU context
+unsafe fn save_context(context: &mut Context) {
+    asm!(
+        "mov [{0} + 0], rax",
+        "mov [{0} + 8], rbx",
+        "mov [{0} + 16], rcx",
+        "mov [{0} + 24], rdx",
+        "mov [{0} + 32], rsi",
+        "mov [{0} + 40], rdi",
+        "mov [{0} + 48], rsp",
+        "mov [{0} + 56], rbp",
+        "pushf",
+        "pop [{0} + 128]",
+        "mov [{0} + 136], rip",
+        in(reg) context as *mut Context
+    );
+}
+
+// Enable timer interrupt
+fn enable_timer_interrupt() -> Result<(), Error> {
+    // TODO: Implement actual timer setup
+    Ok(())
+}

@@ -1,0 +1,77 @@
+# Build directories
+/build/
+/target/
+
+# Generated files
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.img
+*.iso
+*.bin
+
+# Rust
+**/*.rs.bk
+Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Dependencies
+/vendor/
+/node_modules/
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Test coverage
+/coverage/
+/htmlcov/
+
+# Documentation
+/docs/_build/
+/docs/_site/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# System specific
+.directory
+.Trash-*
+.nfs*
+
+# Android build artifacts
+*.apk
+*.ap_
+*.dex
+
+# Debug files
+*.debug
+*.pdb
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

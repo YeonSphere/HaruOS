@@ -1,0 +1,171 @@
+// HaruOS Build System
+
+import { Project } from "./project"
+import { Target } from "./core/compiler/target"
+import { Error } from "./core/compiler/error"
+import { AndroidCompat } from "./core/system/android/compat"
+
+// Build configuration
+struct BuildConfig {
+    project: Project
+    target: Target
+    optimization_level: u32
+    debug_info: bool
+    parallel: bool
+    incremental: bool
+    android_compat: bool
+    
+    // Constructor
+    new(project: Project) -> BuildConfig {
+        BuildConfig {
+            project,
+            target: Target::AARCH64,
+            optimization_level: 3,
+            debug_info: true,
+            parallel: true,
+            incremental: true,
+            android_compat: true
+        }
+    }
+}
+
+// Build system
+struct BuildSystem {
+    config: BuildConfig
+    
+    // Constructor
+    new(config: BuildConfig) -> BuildSystem {
+        BuildSystem { config }
+    }
+    
+    // Build process
+    fn build(&mut self) -> Result<(), Error> {
+        // 1. Parse project configuration
+        let project = self.parse_project()?
+        
+        // 2. Build kernel
+        self.build_kernel(&project)?
+        
+        // 3. Build drivers
+        self.build_drivers(&project)?
+        
+        // 4. Build system services
+        self.build_system_services(&project)?
+        
+        // 5. Build UI framework
+        self.build_ui_framework(&project)?
+        
+        // 6. Build Android compatibility layer if enabled
+        if self.config.android_compat {
+            self.build_android_compat(&project)?
+        }
+        
+        // 7. Build core applications
+        self.build_core_apps(&project)?
+        
+        // 8. Run tests if enabled
+        if project.testing.enabled {
+            self.run_tests()?
+        }
+        
+        // 9. Generate documentation if enabled
+        if project.docs.generate {
+            self.generate_docs()?
+        }
+        
+        // 10. Create system image
+        self.create_system_image()?
+        
+        Ok(())
+    }
+    
+    // Kernel build
+    fn build_kernel(&self, project: &Project) -> Result<(), Error> {
+        // Build memory management
+        self.build_memory_management()?
+        
+        // Build process management
+        self.build_process_management()?
+        
+        // Build scheduler
+        self.build_scheduler()?
+        
+        // Build security features
+        self.build_kernel_security()?
+        
+        Ok(())
+    }
+    
+    // Driver build
+    fn build_drivers(&self, project: &Project) -> Result<(), Error> {
+        // Build hardware abstraction layer
+        self.build_hal()?
+        
+        // Build native drivers
+        self.build_native_drivers()?
+        
+        // Build Android driver compatibility if enabled
+        if self.config.android_compat {
+            self.build_android_drivers()?
+        }
+        
+        Ok(())
+    }
+    
+    // System services build
+    fn build_system_services(&self, project: &Project) -> Result<(), Error> {
+        // Build init system
+        self.build_init_system()?
+        
+        // Build service manager
+        self.build_service_manager()?
+        
+        // Build security services
+        self.build_security_services()?
+        
+        Ok(())
+    }
+    
+    // UI framework build
+    fn build_ui_framework(&self, project: &Project) -> Result<(), Error> {
+        // Build compositor
+        self.build_compositor()?
+        
+        // Build window manager
+        self.build_window_manager()?
+        
+        // Build theme engine
+        self.build_theme_engine()?
+        
+        Ok(())
+    }
+    
+    // Android compatibility layer build
+    fn build_android_compat(&self, project: &Project) -> Result<(), Error> {
+        // Build runtime
+        self.build_android_runtime()?
+        
+        // Build service bridges
+        self.build_android_services()?
+        
+        // Build app compatibility
+        self.build_android_apps_compat()?
+        
+        Ok(())
+    }
+}
+
+// Main build entry point
+fn main() -> Result<(), Error> {
+    // Load project configuration
+    let project = Project::load("project.seo")?
+    
+    // Create build configuration
+    let config = BuildConfig::new(project)
+    
+    // Create and run build system
+    let mut builder = BuildSystem::new(config)
+    builder.build()?
+    
+    Ok(())
+}

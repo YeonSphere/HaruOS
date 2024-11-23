@@ -1,204 +1,282 @@
 // NanoCore Kernel
-// Ultra-efficient kernel architecture
+// Ultra-efficient operating system kernel
 
-import { Hardware } from "./hardware"
-import { Memory } from "./memory"
-import { Thread } from "./thread"
-import { Sync } from "./sync"
-
-// Kernel configuration (compile-time)
-const CONFIG {
-    // Hardware settings
-    MAX_CPUS: u8 = 32
-    MAX_DEVICES: u16 = 256
+// Kernel configuration
+pub mod config {
+    // Compile-time configuration
+    pub const MAX_CPUS: usize = 32;
+    pub const MAX_PRIORITY_LEVELS: usize = 32;
+    pub const MAX_THREADS: usize = 1024;
+    pub const KERNEL_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16MB
     
-    // Memory settings
-    PAGE_SIZE: u32 = 4096
-    MAX_MEMORY: u64 = 1 << 48  // 256TB
-    
-    // Process settings
-    MAX_THREADS: u16 = 1024
-    MAX_PRIORITY: u8 = 32
-    
-    // System settings
-    TICK_RATE: u32 = 1000
-    MAX_SYSCALLS: u16 = 128
+    // Runtime configuration
+    pub static mut CONFIG: KernelConfig = KernelConfig {
+        debug_level: 0,
+        performance_monitoring: false,
+        linux_compat: true,
+    };
 }
 
-// Core kernel state
-struct Kernel {
-    // Hardware management
-    hw: Hardware
+// Kernel initialization and boot sequence
+pub fn kernel_main() -> ! {
+    // Early hardware initialization
+    hardware::init_hardware().expect("Hardware initialization failed");
     
-    // Memory management (zero-copy)
-    mem: Memory
+    // Initialize memory subsystem
+    memory::init_memory().expect("Memory initialization failed");
     
-    // Thread management
-    threads: StaticVec<Thread, CONFIG.MAX_THREADS>
-    current: [u16; CONFIG.MAX_CPUS]
+    // Setup system call interface
+    syscall::init_syscalls();
     
-    // Synchronization
-    sync: Sync
+    // Initialize scheduler
+    scheduler::init_scheduler();
+    
+    // Setup network stack
+    network::init_network().expect("Network initialization failed");
+    
+    // Initialize Linux compatibility layer
+    linux_compat::init().expect("Linux compatibility initialization failed");
+    
+    // Start scheduler
+    scheduler::start();
+    
+    // We should never reach here
+    unreachable!()
 }
 
-impl Kernel {
-    // Initialize kernel
-    fn init() -> Result<Kernel, Error> {
-        // Initialize hardware first
-        let hw = Hardware::init()?
-        
-        // Initialize memory with hardware map
-        let mem = Memory::init(hw.get_memory_map())?
-        
-        // Initialize thread management
-        let threads = StaticVec::new()
-        let current = [0; CONFIG.MAX_CPUS]
-        
-        // Initialize synchronization
-        let sync = Sync::init()?
-        
-        Ok(Kernel {
-            hw,
-            mem,
-            threads,
-            current,
-            sync
-        })
-    }
+// Linux compatibility module
+pub mod linux_compat {
+    use crate::hardware::firmware;
+    use crate::memory::dma;
     
-    // Fast path system call handler
-    #[inline(always)]
-    fn syscall(&mut self, number: u16, args: &[u64]) -> Result<u64, Error> {
-        // Validate syscall number at compile time
-        if number >= CONFIG.MAX_SYSCALLS {
-            return Err(Error::InvalidSyscall)
-        }
+    pub fn init() -> Result<(), Error> {
+        // Initialize Linux firmware interface
+        firmware::init_interface()?;
         
-        // Direct dispatch without context switch
-        match number {
-            SYS_MEMORY -> self.handle_memory(args),
-            SYS_THREAD -> self.handle_thread(args),
-            SYS_DEVICE -> self.handle_device(args),
-            _ -> self.handle_other(number, args)
-        }
-    }
-    
-    // Memory operations (zero-copy)
-    #[inline(always)]
-    fn handle_memory(&mut self, args: &[u64]) -> Result<u64, Error> {
-        match args[0] {
-            MEM_ALLOC -> self.mem.alloc_fast(args[1]),
-            MEM_FREE -> self.mem.free_fast(args[1]),
-            _ -> Err(Error::InvalidMemoryOp)
-        }
-    }
-    
-    // Thread operations (minimal switching)
-    #[inline(always)]
-    fn handle_thread(&mut self, args: &[u64]) -> Result<u64, Error> {
-        match args[0] {
-            THREAD_CREATE -> self.create_thread_fast(args[1], args[2]),
-            THREAD_EXIT -> self.exit_thread_fast(args[1]),
-            _ -> Err(Error::InvalidThreadOp)
-        }
-    }
-    
-    // Device operations (direct access)
-    #[inline(always)]
-    fn handle_device(&mut self, args: &[u64]) -> Result<u64, Error> {
-        // Direct hardware access through Linux firmware layer
-        self.hw.access_device(args[0], &args[1..])
-    }
-    
-    // Interrupt handler (minimal overhead)
-    #[inline(always)]
-    fn handle_interrupt(&mut self, irq: u32) -> Result<(), Error> {
-        match irq {
-            IRQ_TIMER -> self.handle_timer_fast(),
-            IRQ_DEVICE -> self.hw.handle_device_irq(irq),
-            _ -> self.hw.handle_other_irq(irq)
-        }
-    }
-    
-    // Fast thread creation
-    #[inline(always)]
-    fn create_thread_fast(&mut self, entry: u64, priority: u8) -> Result<u64, Error> {
-        if priority >= CONFIG.MAX_PRIORITY {
-            return Err(Error::InvalidPriority)
-        }
+        // Setup DMA mappings for Linux drivers
+        dma::init_linux_mappings()?;
         
-        // Use pre-allocated thread slot
-        let thread = Thread::new(entry, priority)?
-        let id = self.threads.push(thread)?
-        
-        Ok(id as u64)
-    }
-    
-    // Fast thread exit
-    #[inline(always)]
-    fn exit_thread_fast(&mut self, id: u64) -> Result<u64, Error> {
-        // Direct thread cleanup without scheduling
-        self.threads.remove(id as usize)?
-        Ok(0)
-    }
-    
-    // Fast timer handling
-    #[inline(always)]
-    fn handle_timer_fast(&mut self) -> Result<(), Error> {
-        // Minimal scheduling overhead
-        let cpu = self.hw.current_cpu()
-        let next = self.find_next_thread(cpu)
-        
-        if next != self.current[cpu] {
-            self.switch_to(cpu, next)?
-        }
+        // Initialize Linux driver compatibility layer
+        init_driver_compat()?;
         
         Ok(())
     }
     
-    // Find next thread (optimized search)
-    #[inline(always)]
-    fn find_next_thread(&self, cpu: usize) -> u16 {
-        // Priority-based selection
-        let mut best_priority = 0
-        let mut best_thread = self.current[cpu]
-        
-        for (id, thread) in self.threads.iter().enumerate() {
-            if thread.priority > best_priority && thread.state.is_runnable() {
-                best_priority = thread.priority
-                best_thread = id as u16
-            }
-        }
-        
-        best_thread
-    }
-    
-    // Fast context switch
-    #[inline(always)]
-    fn switch_to(&mut self, cpu: usize, thread: u16) -> Result<(), Error> {
-        // Direct register swap
+    fn init_driver_compat() -> Result<(), Error> {
+        // Map Linux driver memory regions
         unsafe {
-            let old = &self.threads[self.current[cpu] as usize]
-            let new = &self.threads[thread as usize]
-            
-            swap_context(&old.context, &new.context)
+            map_driver_regions()?;
         }
         
-        self.current[cpu] = thread
+        // Initialize Linux IRQ compatibility
+        init_irq_compat()?;
+        
         Ok(())
     }
 }
 
-// Fast context swap
-#[inline(always)]
-unsafe fn swap_context(old: &Context, new: &Context) {
-    asm!(
-        "mov [{0}], rsp",
-        "mov [{0} + 8], rbp",
-        "mov rsp, [{1}]",
-        "mov rbp, [{1} + 8]",
-        "jmp [{1} + 16]",
-        in(reg) old as *const Context,
-        in(reg) new as *const Context
-    )
+// Kernel state
+struct KernelState {
+    // Core components
+    hal: HAL,
+    memory: MemoryManager,
+    process: ProcessManager,
+    scheduler: Scheduler,
+    syscall: SysCallHandler,
+    fs: FileSystemManager,
+    net: NetworkManager,
+    
+    // Resource management
+    resources: ResourceManager,
+    
+    // Statistics
+    stats: KernelStats
+}
+
+impl KernelState {
+    #[inline(always)]
+    fn init(&mut self, config: &KernelConfig) -> Result<(), Error> {
+        // Initialize hardware
+        self.hal.init()?;
+        
+        // Initialize memory
+        self.memory.init(config.max_memory)?;
+        
+        // Initialize process manager
+        self.process.init(config.max_processes)?;
+        
+        // Initialize scheduler
+        self.scheduler.init(config.scheduler_quantum)?;
+        
+        // Initialize syscall handler
+        self.syscall.init()?;
+        
+        // Initialize file systems
+        self.fs.init(config.max_files)?;
+        
+        // Initialize network
+        self.net.init()?;
+        
+        Ok(())
+    }
+    
+    #[inline(always)]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        // Shutdown network
+        self.net.shutdown()?;
+        
+        // Shutdown file systems
+        self.fs.shutdown()?;
+        
+        // Shutdown syscall handler
+        self.syscall.shutdown()?;
+        
+        // Shutdown scheduler
+        self.scheduler.shutdown()?;
+        
+        // Shutdown process manager
+        self.process.shutdown()?;
+        
+        // Shutdown memory
+        self.memory.shutdown()?;
+        
+        // Shutdown hardware
+        self.hal.shutdown()?;
+        
+        Ok(())
+    }
+}
+
+// Resource manager
+struct ResourceManager {
+    // Memory resources
+    physical_memory: PhysicalMemoryManager,
+    virtual_memory: VirtualMemoryManager,
+    
+    // Process resources
+    process_table: ProcessTable,
+    thread_table: ThreadTable,
+    
+    // File resources
+    file_table: FileTable,
+    inode_table: InodeTable,
+    
+    // Network resources
+    socket_table: SocketTable,
+    route_table: RouteTable,
+    
+    // Statistics
+    stats: ResourceStats
+}
+
+impl ResourceManager {
+    #[inline(always)]
+    fn allocate_memory(&mut self, size: usize, flags: u32) -> Result<*mut u8, Error> {
+        // Allocate physical memory
+        let phys = self.physical_memory.allocate(size)?;
+        
+        // Map virtual memory
+        let virt = self.virtual_memory.map(phys, size, flags)?;
+        
+        Ok(virt as *mut u8)
+    }
+    
+    #[inline(always)]
+    fn free_memory(&mut self, ptr: *mut u8, size: usize) -> Result<(), Error> {
+        // Get physical address
+        let phys = self.virtual_memory.get_physical(ptr as u64)?;
+        
+        // Unmap virtual memory
+        self.virtual_memory.unmap(ptr as u64, size)?;
+        
+        // Free physical memory
+        self.physical_memory.free(phys, size)?;
+        
+        Ok(())
+    }
+}
+
+// Performance monitoring
+struct PerformanceMonitor {
+    // CPU monitoring
+    cpu_usage: CPUUsageMonitor,
+    cache_stats: CacheStatsMonitor,
+    
+    // Memory monitoring
+    memory_usage: MemoryUsageMonitor,
+    page_faults: PageFaultMonitor,
+    
+    // I/O monitoring
+    io_stats: IOStatsMonitor,
+    network_stats: NetworkStatsMonitor,
+    
+    // Process monitoring
+    process_stats: ProcessStatsMonitor,
+    thread_stats: ThreadStatsMonitor
+}
+
+impl PerformanceMonitor {
+    #[inline(always)]
+    fn sample(&mut self) {
+        // Sample CPU stats
+        self.cpu_usage.sample();
+        self.cache_stats.sample();
+        
+        // Sample memory stats
+        self.memory_usage.sample();
+        self.page_faults.sample();
+        
+        // Sample I/O stats
+        self.io_stats.sample();
+        self.network_stats.sample();
+        
+        // Sample process stats
+        self.process_stats.sample();
+        self.thread_stats.sample();
+    }
+    
+    #[inline(always)]
+    fn report(&self) {
+        // Print performance report
+        println!("Performance Report:");
+        println!("CPU Usage: {}%", self.cpu_usage.get_usage());
+        println!("Memory Usage: {}%", self.memory_usage.get_usage());
+        println!("Page Faults: {}", self.page_faults.get_count());
+        println!("I/O Operations: {}", self.io_stats.get_ops());
+        println!("Network Traffic: {} bytes", self.network_stats.get_traffic());
+        println!("Active Processes: {}", self.process_stats.get_count());
+        println!("Active Threads: {}", self.thread_stats.get_count());
+    }
+}
+
+// Panic handler
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    // Print panic information
+    println!("Kernel panic: {}", info);
+    
+    // Halt system
+    loop {
+        unsafe {
+            asm!("hlt");
+        }
+    }
+}
+
+// Exception handlers
+#[no_mangle]
+pub extern "C" fn page_fault_handler(error_code: u64, address: u64) {
+    println!("Page fault at {:#x} with error code {:#x}", address, error_code);
+    panic!("Page fault");
+}
+
+#[no_mangle]
+pub extern "C" fn double_fault_handler() -> ! {
+    panic!("Double fault");
+}
+
+#[no_mangle]
+pub extern "C" fn general_protection_fault_handler(error_code: u64) {
+    println!("General protection fault with error code {:#x}", error_code);
+    panic!("General protection fault");
 }

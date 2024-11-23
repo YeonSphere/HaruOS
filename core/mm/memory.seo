@@ -1,0 +1,312 @@
+// NanoCore Memory Management
+// Zero-copy operations with power-of-2 block allocation
+
+// Memory configuration
+const MEMORY_CONFIG: usize = {
+    // Page sizes
+    const BASE_PAGE_SIZE: usize = 4096;
+    const HUGE_PAGE_SIZE: usize = 2 << 20; // 2MB
+    const GIGA_PAGE_SIZE: usize = 1 << 30; // 1GB
+    
+    // Memory limits
+    const MAX_PHYSICAL_MEMORY: u64 = 1 << 40; // 1TB
+    const MAX_VIRTUAL_MEMORY: u64 = 1 << 48; // 256TB
+    
+    // Cache configuration
+    const CACHE_LINE_SIZE: usize = 64;
+    const L1_CACHE_SIZE: usize = 32 << 10; // 32KB
+    const L2_CACHE_SIZE: usize = 256 << 10; // 256KB
+    const L3_CACHE_SIZE: usize = 8 << 20; // 8MB
+};
+
+// Physical memory manager
+struct PhysicalMemoryManager {
+    // Memory regions
+    regions: StaticVec<MemoryRegion, 32>,
+    
+    // Block allocation
+    blocks: BlockAllocator,
+    
+    // DMA management
+    dma: DMAManager,
+    
+    // Statistics
+    stats: PhysicalMemoryStats
+}
+
+impl PhysicalMemoryManager {
+    #[inline(always)]
+    fn allocate_block(&mut self, size: usize) -> Result<PhysAddr, Error> {
+        // Round up to power of 2
+        let block_size = size.next_power_of_two();
+        
+        // Allocate block
+        let block = self.blocks.allocate(block_size)?;
+        
+        // Update statistics
+        self.stats.allocated += block_size;
+        
+        Ok(block)
+    }
+    
+    #[inline(always)]
+    fn free_block(&mut self, addr: PhysAddr, size: usize) -> Result<(), Error> {
+        // Round up to power of 2
+        let block_size = size.next_power_of_two();
+        
+        // Free block
+        self.blocks.free(addr, block_size)?;
+        
+        // Update statistics
+        self.stats.freed += block_size;
+        
+        Ok(())
+    }
+}
+
+// Virtual memory manager
+struct VirtualMemoryManager {
+    // Page tables
+    tables: PageTableManager,
+    
+    // Region management
+    regions: RegionManager,
+    
+    // Cache management
+    cache: CacheManager,
+    
+    // Statistics
+    stats: VirtualMemoryStats
+}
+
+impl VirtualMemoryManager {
+    #[inline(always)]
+    fn map_region(&mut self, virt: VirtAddr, phys: PhysAddr, size: usize, flags: PageFlags) -> Result<(), Error> {
+        // Create region
+        let region = self.regions.create_region(virt, size, flags)?;
+        
+        // Map pages
+        for offset in (0..size).step_by(MEMORY_CONFIG.BASE_PAGE_SIZE) {
+            let v_addr = virt + offset;
+            let p_addr = phys + offset;
+            
+            self.map_page(v_addr, p_addr, flags)?;
+        }
+        
+        Ok(())
+    }
+    
+    #[inline(always)]
+    fn unmap_region(&mut self, virt: VirtAddr, size: usize) -> Result<(), Error> {
+        // Get region
+        let region = self.regions.get_region(virt)?;
+        
+        // Unmap pages
+        for offset in (0..size).step_by(MEMORY_CONFIG.BASE_PAGE_SIZE) {
+            let v_addr = virt + offset;
+            self.unmap_page(v_addr)?;
+        }
+        
+        // Remove region
+        self.regions.remove_region(virt)?;
+        
+        Ok(())
+    }
+}
+
+// Block allocator
+struct BlockAllocator {
+    // Free lists for each block size
+    free_lists: [FreeList; 32],
+    
+    // Buddy system
+    buddy: BuddyAllocator,
+    
+    // Statistics
+    stats: BlockAllocatorStats
+}
+
+impl BlockAllocator {
+    #[inline(always)]
+    fn allocate(&mut self, size: usize) -> Result<PhysAddr, Error> {
+        // Get block size index
+        let index = size.trailing_zeros() as usize;
+        
+        // Check free list
+        if let Some(block) = self.free_lists[index].pop() {
+            return Ok(block);
+        }
+        
+        // Allocate from buddy system
+        let block = self.buddy.allocate(size)?;
+        
+        // Update statistics
+        self.stats.allocated += size;
+        
+        Ok(block)
+    }
+    
+    #[inline(always)]
+    fn free(&mut self, addr: PhysAddr, size: usize) -> Result<(), Error> {
+        // Get block size index
+        let index = size.trailing_zeros() as usize;
+        
+        // Add to free list
+        self.free_lists[index].push(addr);
+        
+        // Update statistics
+        self.stats.freed += size;
+        
+        Ok(())
+    }
+}
+
+// Cache manager
+struct CacheManager {
+    // Cache levels
+    l1_cache: Cache,
+    l2_cache: Cache,
+    l3_cache: Cache,
+    
+    // Write combining
+    write_combine: WriteCombiner,
+    
+    // Statistics
+    stats: CacheStats
+}
+
+impl CacheManager {
+    #[inline(always)]
+    fn flush_cache(&mut self) {
+        // Flush all cache levels
+        unsafe {
+            // Flush L1 cache
+            asm!("wbinvd");
+            
+            // Flush L2 cache
+            self.l2_cache.flush();
+            
+            // Flush L3 cache
+            self.l3_cache.flush();
+        }
+    }
+    
+    #[inline(always)]
+    fn invalidate_cache(&mut self, addr: VirtAddr, size: usize) {
+        // Calculate cache lines
+        let start_line = addr & !(MEMORY_CONFIG.CACHE_LINE_SIZE - 1);
+        let end_line = (addr + size + MEMORY_CONFIG.CACHE_LINE_SIZE - 1) & !(MEMORY_CONFIG.CACHE_LINE_SIZE - 1);
+        
+        // Invalidate cache lines
+        for line in (start_line..end_line).step_by(MEMORY_CONFIG.CACHE_LINE_SIZE) {
+            unsafe {
+                asm!("clflush [{0}]", in(reg) line);
+            }
+        }
+    }
+}
+
+// Memory manager
+struct MemoryManager {
+    // Core components
+    physical: PhysicalMemoryManager,
+    virtual: VirtualMemoryManager,
+    cache: CacheManager,
+    
+    // Zero-copy engine
+    zero_copy: ZeroCopyEngine,
+    
+    // Statistics
+    stats: MemoryStats
+}
+
+impl MemoryManager {
+    #[inline(always)]
+    fn allocate(&mut self, size: usize, flags: PageFlags) -> Result<VirtAddr, Error> {
+        // Allocate physical memory
+        let phys = self.physical.allocate_block(size)?;
+        
+        // Find virtual address
+        let virt = self.virtual.find_region(size)?;
+        
+        // Map region
+        self.virtual.map_region(virt, phys, size, flags)?;
+        
+        // Update statistics
+        self.stats.allocated += size;
+        
+        Ok(virt)
+    }
+    
+    #[inline(always)]
+    fn free(&mut self, addr: VirtAddr, size: usize) -> Result<(), Error> {
+        // Get physical address
+        let phys = self.virtual.get_physical(addr)?;
+        
+        // Unmap region
+        self.virtual.unmap_region(addr, size)?;
+        
+        // Free physical memory
+        self.physical.free_block(phys, size)?;
+        
+        // Update statistics
+        self.stats.freed += size;
+        
+        Ok(())
+    }
+    
+    #[inline(always)]
+    fn copy(&mut self, dst: VirtAddr, src: VirtAddr, size: usize) -> Result<(), Error> {
+        // Check alignment
+        if dst & 0x7 != 0 || src & 0x7 != 0 {
+            return Err(Error::InvalidAlignment);
+        }
+        
+        // Use zero-copy if possible
+        if let Ok(()) = self.zero_copy.copy(dst, src, size) {
+            return Ok(());
+        }
+        
+        // Fallback to normal copy
+        unsafe {
+            ptr::copy_nonoverlapping(
+                src as *const u8,
+                dst as *mut u8,
+                size
+            );
+        }
+        
+        Ok(())
+    }
+}
+
+// Zero-copy engine
+struct ZeroCopyEngine {
+    // Page mapping
+    page_map: PageMapper,
+    
+    // DMA engine
+    dma: DMAEngine,
+    
+    // Statistics
+    stats: ZeroCopyStats
+}
+
+impl ZeroCopyEngine {
+    #[inline(always)]
+    fn copy(&mut self, dst: VirtAddr, src: VirtAddr, size: usize) -> Result<(), Error> {
+        // Try DMA copy first
+        if let Ok(()) = self.dma.copy(dst, src, size) {
+            self.stats.dma_copies += 1;
+            return Ok(());
+        }
+        
+        // Try page remapping
+        if let Ok(()) = self.page_map.remap(dst, src, size) {
+            self.stats.page_remaps += 1;
+            return Ok(());
+        }
+        
+        Err(Error::ZeroCopyFailed)
+    }
+}

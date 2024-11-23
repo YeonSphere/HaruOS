@@ -1,52 +1,22 @@
-// NanoCore Process Scheduler
-// Ultra-efficient process scheduling with Seokjin integration
+// NanoCore Scheduler
+// Priority-based scheduling with minimal context switching
 
-// Scheduler interface
-struct Scheduler {
-    // Process management
-    processes: StaticVec<Process, CONFIG.MAX_PROCESSES>,
+// Scheduler configuration
+const SCHEDULER_CONFIG {
+    // Priority levels
+    MAX_PRIORITY: u8 = 32,
+    DEFAULT_PRIORITY: u8 = 16,
+    IDLE_PRIORITY: u8 = 0,
     
-    // Run queues for each priority level
-    run_queues: [Queue<ProcessId>; CONFIG.MAX_PRIORITY],
+    // Time slices
+    BASE_QUANTUM: u32 = 10_000, // 10ms
+    MIN_QUANTUM: u32 = 1_000, // 1ms
+    MAX_QUANTUM: u32 = 100_000, // 100ms
     
-    // CPU affinity masks
-    cpu_affinity: [u64; CONFIG.MAX_CPUS],
-    
-    // Seokjin scheduler optimizer
-    seokjin: SeokjinScheduler,
-    
-    // Performance metrics
-    metrics: SchedulerMetrics
-}
-
-// Process structure
-struct Process {
-    id: ProcessId,
-    state: ProcessState,
-    priority: u8,
-    quantum: u32,
-    context: Context,
-    memory_map: MemoryMap,
-    threads: StaticVec<Thread, CONFIG.MAX_THREADS_PER_PROCESS>
-}
-
-// Process state
-enum ProcessState {
-    Ready,
-    Running,
-    Blocked,
-    Suspended,
-    Terminated
-}
-
-// Thread structure
-struct Thread {
-    id: ThreadId,
-    process: ProcessId,
-    state: ThreadState,
-    priority: u8,
-    context: Context,
-    stack: Stack
+    // Queue sizes
+    MAX_THREADS: usize = 1024,
+    MAX_READY: usize = 256,
+    MAX_WAITING: usize = 256
 }
 
 // Thread state
@@ -54,278 +24,268 @@ enum ThreadState {
     Ready,
     Running,
     Blocked,
-    Suspended
+    Sleeping,
+    Zombie
 }
 
-// CPU context
-struct Context {
+// Thread context
+struct ThreadContext {
     // General purpose registers
-    rax: u64, rbx: u64, rcx: u64, rdx: u64,
-    rsi: u64, rdi: u64, rbp: u64, rsp: u64,
-    r8: u64, r9: u64, r10: u64, r11: u64,
-    r12: u64, r13: u64, r14: u64, r15: u64,
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rbp: u64,
+    rsp: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
     
     // Special registers
     rip: u64,
     rflags: u64,
-    cs: u16,
-    ss: u16,
-    
-    // FPU/SIMD state
-    xmm: [u128; 16],
-    mxcsr: u32
+    cr3: u64
 }
 
-// Seokjin scheduler optimizer
-struct SeokjinScheduler {
-    // Process behavior patterns
-    patterns: StaticVec<ProcessPattern, 64>,
+// Thread control block
+struct Thread {
+    // Thread identification
+    id: u32,
+    pid: u32,
     
-    // CPU usage patterns
-    cpu_patterns: [CpuPattern; CONFIG.MAX_CPUS],
+    // Scheduling info
+    priority: u8,
+    state: ThreadState,
+    quantum: u32,
     
-    // Optimization rules
-    rules: StaticVec<SchedRule, 32>,
+    // Context
+    context: ThreadContext,
     
-    // Performance metrics
-    metrics: SeokjinMetrics
+    // Statistics
+    stats: ThreadStats
 }
 
-impl Scheduler {
-    // Initialize scheduler
-    fn init() -> Result<Scheduler, Error> {
-        // Initialize process table
-        let processes = StaticVec::new();
-        
-        // Initialize run queues
-        let run_queues = [Queue::new(); CONFIG.MAX_PRIORITY];
-        
-        // Initialize CPU affinity
-        let cpu_affinity = [0xFFFFFFFF; CONFIG.MAX_CPUS];
-        
-        // Initialize Seokjin optimizer
-        let seokjin = SeokjinScheduler::init()?;
-        
-        // Initialize metrics
-        let metrics = SchedulerMetrics::new();
-        
-        Ok(Scheduler {
-            processes,
-            run_queues,
-            cpu_affinity,
-            seokjin,
-            metrics
-        })
-    }
+// Ready queue
+struct ReadyQueue {
+    // Priority queues
+    queues: [StaticVec<Thread, SCHEDULER_CONFIG.MAX_READY>; SCHEDULER_CONFIG.MAX_PRIORITY],
     
-    // Fast path scheduling
+    // Bitmap for non-empty queues
+    bitmap: u32,
+    
+    // Statistics
+    stats: QueueStats
+}
+
+impl ReadyQueue {
     #[inline(always)]
-    fn schedule(&mut self) -> Option<ProcessId> {
-        // Check Seokjin optimization hints
-        if let Some(pid) = self.seokjin.get_optimal_process() {
-            return Some(pid);
-        }
+    fn push(&mut self, thread: Thread) -> Result<(), Error> {
+        // Get priority queue
+        let queue = &mut self.queues[thread.priority as usize];
         
-        // Find highest priority ready process
-        for priority in (0..CONFIG.MAX_PRIORITY).rev() {
-            if let Some(pid) = self.run_queues[priority].pop() {
-                // Update process state
-                let process = &mut self.processes[pid.0];
-                process.state = ProcessState::Running;
-                
-                // Update metrics
-                self.metrics.update_schedule(process);
-                
-                // Notify Seokjin
-                self.seokjin.on_schedule(pid);
-                
-                return Some(pid);
-            }
-        }
+        // Add thread
+        queue.push(thread)?;
         
-        None
-    }
-    
-    // Context switch
-    #[inline(always)]
-    unsafe fn context_switch(&mut self, old: ProcessId, new: ProcessId) {
-        // Save old context
-        let old_process = &mut self.processes[old.0];
-        old_process.context.save_registers();
-        
-        // Load new context
-        let new_process = &mut self.processes[new.0];
-        new_process.context.load_registers();
-        
-        // Switch memory maps
-        switch_memory_map(&new_process.memory_map);
-        
-        // Update metrics
-        self.metrics.update_context_switch();
-    }
-    
-    // Create new process
-    fn create_process(&mut self, entry: u64, priority: u8) -> Result<ProcessId, Error> {
-        // Allocate process slot
-        let id = self.processes.push(Process {
-            id: ProcessId(self.processes.len()),
-            state: ProcessState::Ready,
-            priority,
-            quantum: CONFIG.BASE_QUANTUM,
-            context: Context::new(),
-            memory_map: MemoryMap::new()?,
-            threads: StaticVec::new()
-        })?;
-        
-        // Initialize main thread
-        let thread = Thread::new(entry, priority)?;
-        self.processes[id].threads.push(thread)?;
-        
-        // Add to run queue
-        self.run_queues[priority as usize].push(ProcessId(id));
-        
-        // Notify Seokjin
-        self.seokjin.on_process_create(ProcessId(id));
-        
-        Ok(ProcessId(id))
-    }
-    
-    // Terminate process
-    fn terminate_process(&mut self, pid: ProcessId) -> Result<(), Error> {
-        let process = &mut self.processes[pid.0];
-        
-        // Clean up threads
-        for thread in process.threads.iter_mut() {
-            thread.cleanup()?;
-        }
-        
-        // Free memory
-        process.memory_map.cleanup()?;
-        
-        // Update state
-        process.state = ProcessState::Terminated;
-        
-        // Notify Seokjin
-        self.seokjin.on_process_terminate(pid);
+        // Update bitmap
+        self.bitmap |= 1 << thread.priority;
         
         Ok(())
     }
     
-    // Block process
     #[inline(always)]
-    fn block_process(&mut self, pid: ProcessId) {
-        let process = &mut self.processes[pid.0];
-        process.state = ProcessState::Blocked;
+    fn pop(&mut self) -> Option<Thread> {
+        // Find highest priority queue
+        let priority = 31 - self.bitmap.leading_zeros();
         
-        // Notify Seokjin
-        self.seokjin.on_process_block(pid);
-    }
-    
-    // Unblock process
-    #[inline(always)]
-    fn unblock_process(&mut self, pid: ProcessId) {
-        let process = &mut self.processes[pid.0];
-        process.state = ProcessState::Ready;
+        // Get queue
+        let queue = &mut self.queues[priority as usize];
         
-        // Add back to run queue
-        self.run_queues[process.priority as usize].push(pid);
+        // Remove thread
+        let thread = queue.pop()?;
         
-        // Notify Seokjin
-        self.seokjin.on_process_unblock(pid);
+        // Update bitmap if queue is empty
+        if queue.is_empty() {
+            self.bitmap &= !(1 << priority);
+        }
+        
+        Some(thread)
     }
 }
 
-impl SeokjinScheduler {
-    // Initialize scheduler optimizer
-    fn init() -> Result<SeokjinScheduler, Error> {
-        Ok(SeokjinScheduler {
-            patterns: StaticVec::new(),
-            cpu_patterns: [CpuPattern::new(); CONFIG.MAX_CPUS],
-            rules: StaticVec::new(),
-            metrics: SeokjinMetrics::new()
-        })
+// Scheduler
+struct Scheduler {
+    // Thread management
+    threads: StaticVec<Thread, SCHEDULER_CONFIG.MAX_THREADS>,
+    current: [u32; 256], // Per-CPU current thread
+    
+    // Ready queue
+    ready: ReadyQueue,
+    
+    // Waiting queue
+    waiting: StaticVec<Thread, SCHEDULER_CONFIG.MAX_WAITING>,
+    
+    // Statistics
+    stats: SchedulerStats
+}
+
+impl Scheduler {
+    #[inline(always)]
+    fn schedule(&mut self) -> Result<(), Error> {
+        // Get current CPU
+        let cpu = self.get_current_cpu();
+        
+        // Get current thread
+        let current = self.current[cpu];
+        
+        // Check if preemption is needed
+        if !self.should_preempt(current) {
+            return Ok(());
+        }
+        
+        // Get next thread
+        let next = self.get_next_thread()?;
+        
+        // Switch context
+        self.switch_to(cpu, next.id)?;
+        
+        Ok(())
     }
     
-    // Get optimal process based on patterns
     #[inline(always)]
-    fn get_optimal_process(&self) -> Option<ProcessId> {
-        // Check process patterns
-        for pattern in self.patterns.iter() {
-            if let Some(pid) = pattern.suggest_process() {
-                return Some(pid);
+    fn should_preempt(&self, current: u32) -> bool {
+        // Get current thread
+        let thread = &self.threads[current as usize];
+        
+        // Check quantum
+        if thread.quantum == 0 {
+            return true;
+        }
+        
+        // Check priority
+        if let Some(next) = self.ready.peek() {
+            if next.priority > thread.priority {
+                return true;
             }
         }
         
-        None
+        false
     }
     
-    // Handle scheduling events
     #[inline(always)]
-    fn on_schedule(&mut self, pid: ProcessId) {
-        // Update patterns
-        self.patterns.update_schedule(pid);
+    fn switch_to(&mut self, cpu: usize, thread: u32) -> Result<(), Error> {
+        // Save old context
+        let old = self.current[cpu];
+        self.save_context(old)?;
         
-        // Apply rules
-        self.apply_rules();
+        // Load new context
+        self.load_context(thread)?;
         
-        // Update metrics
-        self.metrics.update_schedule();
+        // Update current thread
+        self.current[cpu] = thread;
+        
+        Ok(())
     }
     
-    // Apply optimization rules
     #[inline(always)]
-    fn apply_rules(&mut self) {
-        for rule in self.rules.iter() {
-            rule.apply(&mut self.patterns);
+    fn save_context(&mut self, thread: u32) -> Result<(), Error> {
+        unsafe {
+            // Save registers
+            asm!(
+                "mov [{0}], rax",
+                "mov [{0} + 8], rbx",
+                "mov [{0} + 16], rcx",
+                "mov [{0} + 24], rdx",
+                "mov [{0} + 32], rsi",
+                "mov [{0} + 40], rdi",
+                "mov [{0} + 48], rbp",
+                "mov [{0} + 56], rsp",
+                "mov [{0} + 64], r8",
+                "mov [{0} + 72], r9",
+                "mov [{0} + 80], r10",
+                "mov [{0} + 88], r11",
+                "mov [{0} + 96], r12",
+                "mov [{0} + 104], r13",
+                "mov [{0} + 112], r14",
+                "mov [{0} + 120], r15",
+                in(reg) &mut self.threads[thread as usize].context
+            );
         }
+        
+        Ok(())
+    }
+    
+    #[inline(always)]
+    fn load_context(&mut self, thread: u32) -> Result<(), Error> {
+        unsafe {
+            // Load registers
+            asm!(
+                "mov rax, [{0}]",
+                "mov rbx, [{0} + 8]",
+                "mov rcx, [{0} + 16]",
+                "mov rdx, [{0} + 24]",
+                "mov rsi, [{0} + 32]",
+                "mov rdi, [{0} + 40]",
+                "mov rbp, [{0} + 48]",
+                "mov rsp, [{0} + 56]",
+                "mov r8, [{0} + 64]",
+                "mov r9, [{0} + 72]",
+                "mov r10, [{0} + 80]",
+                "mov r11, [{0} + 88]",
+                "mov r12, [{0} + 96]",
+                "mov r13, [{0} + 104]",
+                "mov r14, [{0} + 112]",
+                "mov r15, [{0} + 120]",
+                in(reg) &self.threads[thread as usize].context
+            );
+        }
+        
+        Ok(())
     }
 }
 
-// Fast register save/restore
-impl Context {
+// Performance optimizations
+struct SchedulerOptimizer {
+    // CPU affinity
+    affinity: CPUAffinity,
+    
+    // Cache optimization
+    cache_opt: CacheOptimizer,
+    
+    // Load balancing
+    load_balancer: LoadBalancer,
+    
+    // Statistics
+    stats: OptimizerStats
+}
+
+impl SchedulerOptimizer {
     #[inline(always)]
-    unsafe fn save_registers(&mut self) {
-        asm!(
-            "mov [{0}], rax",
-            "mov [{0} + 8], rbx",
-            "mov [{0} + 16], rcx",
-            "mov [{0} + 24], rdx",
-            "mov [{0} + 32], rsi",
-            "mov [{0} + 40], rdi",
-            "mov [{0} + 48], rbp",
-            "mov [{0} + 56], rsp",
-            "mov [{0} + 64], r8",
-            "mov [{0} + 72], r9",
-            "mov [{0} + 80], r10",
-            "mov [{0} + 88], r11",
-            "mov [{0} + 96], r12",
-            "mov [{0} + 104], r13",
-            "mov [{0} + 112], r14",
-            "mov [{0} + 120], r15",
-            in(reg) self as *mut Context
-        );
+    fn optimize_thread(&mut self, thread: &mut Thread) {
+        // Set CPU affinity
+        self.affinity.set_affinity(thread);
+        
+        // Optimize cache usage
+        self.cache_opt.optimize(thread);
+        
+        // Update load balancing
+        self.load_balancer.update(thread);
     }
     
     #[inline(always)]
-    unsafe fn load_registers(&self) {
-        asm!(
-            "mov rax, [{0}]",
-            "mov rbx, [{0} + 8]",
-            "mov rcx, [{0} + 16]",
-            "mov rdx, [{0} + 24]",
-            "mov rsi, [{0} + 32]",
-            "mov rdi, [{0} + 40]",
-            "mov rbp, [{0} + 48]",
-            "mov rsp, [{0} + 56]",
-            "mov r8, [{0} + 64]",
-            "mov r9, [{0} + 72]",
-            "mov r10, [{0} + 80]",
-            "mov r11, [{0} + 88]",
-            "mov r12, [{0} + 96]",
-            "mov r13, [{0} + 104]",
-            "mov r14, [{0} + 112]",
-            "mov r15, [{0} + 120]",
-            in(reg) self as *const Context
-        );
+    fn balance_load(&mut self) {
+        // Check load imbalance
+        if !self.load_balancer.needs_balancing() {
+            return;
+        }
+        
+        // Migrate threads
+        self.load_balancer.balance();
     }
 }

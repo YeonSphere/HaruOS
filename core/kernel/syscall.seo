@@ -1,0 +1,314 @@
+// NanoCore System Call Interface
+// Zero-overhead system calls with direct hardware access
+
+// System call numbers
+enum SysCall {
+    // Process management
+    Fork = 1,
+    Exec = 2,
+    Exit = 3,
+    Wait = 4,
+    
+    // Memory management
+    Mmap = 5,
+    Munmap = 6,
+    Mprotect = 7,
+    
+    // File operations
+    Open = 8,
+    Close = 9,
+    Read = 10,
+    Write = 11,
+    Seek = 12,
+    
+    // Network operations
+    Socket = 13,
+    Connect = 14,
+    Accept = 15,
+    Send = 16,
+    Recv = 17,
+    
+    // IPC operations
+    MsgSend = 18,
+    MsgRecv = 19,
+    ShmCreate = 20,
+    ShmAttach = 21,
+    
+    // Device operations
+    DevOpen = 22,
+    DevClose = 23,
+    DevIoctl = 24,
+    
+    // System operations
+    GetPid = 25,
+    GetTime = 26,
+    Sleep = 27
+}
+
+// System call handler
+struct SysCallHandler {
+    // Core components
+    process_mgr: &'static ProcessManager,
+    memory_mgr: &'static MemoryManager,
+    file_mgr: &'static FileManager,
+    net_mgr: &'static NetManager,
+    
+    // Performance optimizations
+    zero_copy: ZeroCopyEngine,
+    fast_path: FastPathEngine,
+    
+    // Statistics
+    stats: SysCallStats
+}
+
+impl SysCallHandler {
+    // Fast path system call handler
+    #[inline(always)]
+    fn handle_syscall(&mut self, number: u64, args: &[u64]) -> Result<u64, Error> {
+        // Check fast path
+        if let Some(result) = self.fast_path.handle(number, args) {
+            return Ok(result);
+        }
+        
+        // Dispatch system call
+        match number.try_into()? {
+            SysCall::Fork => self.handle_fork(args),
+            SysCall::Exec => self.handle_exec(args),
+            SysCall::Exit => self.handle_exit(args),
+            SysCall::Wait => self.handle_wait(args),
+            SysCall::Mmap => self.handle_mmap(args),
+            SysCall::Munmap => self.handle_munmap(args),
+            SysCall::Mprotect => self.handle_mprotect(args),
+            SysCall::Open => self.handle_open(args),
+            SysCall::Close => self.handle_close(args),
+            SysCall::Read => self.handle_read(args),
+            SysCall::Write => self.handle_write(args),
+            SysCall::Seek => self.handle_seek(args),
+            SysCall::Socket => self.handle_socket(args),
+            SysCall::Connect => self.handle_connect(args),
+            SysCall::Accept => self.handle_accept(args),
+            SysCall::Send => self.handle_send(args),
+            SysCall::Recv => self.handle_recv(args),
+            SysCall::MsgSend => self.handle_msg_send(args),
+            SysCall::MsgRecv => self.handle_msg_recv(args),
+            SysCall::ShmCreate => self.handle_shm_create(args),
+            SysCall::ShmAttach => self.handle_shm_attach(args),
+            SysCall::DevOpen => self.handle_dev_open(args),
+            SysCall::DevClose => self.handle_dev_close(args),
+            SysCall::DevIoctl => self.handle_dev_ioctl(args),
+            SysCall::GetPid => self.handle_get_pid(args),
+            SysCall::GetTime => self.handle_get_time(args),
+            SysCall::Sleep => self.handle_sleep(args),
+            _ => Err(Error::InvalidSyscall)
+        }
+    }
+    
+    // Process management
+    #[inline(always)]
+    fn handle_fork(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Create new process
+        let child = self.process_mgr.fork_process()?;
+        
+        // Setup child context
+        self.setup_child_context(&child)?;
+        
+        Ok(child.pid)
+    }
+    
+    #[inline(always)]
+    fn handle_exec(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get path and arguments
+        let path = self.get_string_arg(args[0])?;
+        let argv = self.get_string_array(args[1])?;
+        
+        // Execute program
+        self.process_mgr.exec_process(path, argv)
+    }
+    
+    // Memory management
+    #[inline(always)]
+    fn handle_mmap(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get mapping parameters
+        let addr = args[0] as *mut u8;
+        let size = args[1] as usize;
+        let prot = args[2] as u32;
+        let flags = args[3] as u32;
+        
+        // Create mapping
+        let mapping = self.memory_mgr.create_mapping(addr, size, prot, flags)?;
+        
+        Ok(mapping.addr as u64)
+    }
+    
+    // File operations
+    #[inline(always)]
+    fn handle_read(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get file descriptor
+        let fd = args[0] as i32;
+        
+        // Get buffer
+        let buffer = self.get_user_buffer_mut(args[1], args[2])?;
+        
+        // Perform zero-copy read
+        self.zero_copy.read(fd, buffer)
+    }
+    
+    #[inline(always)]
+    fn handle_write(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get file descriptor
+        let fd = args[0] as i32;
+        
+        // Get buffer
+        let buffer = self.get_user_buffer(args[1], args[2])?;
+        
+        // Perform zero-copy write
+        self.zero_copy.write(fd, buffer)
+    }
+    
+    // Network operations
+    #[inline(always)]
+    fn handle_send(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get socket
+        let socket = args[0] as i32;
+        
+        // Get buffer
+        let buffer = self.get_user_buffer(args[1], args[2])?;
+        
+        // Perform zero-copy send
+        self.zero_copy.send(socket, buffer)
+    }
+    
+    #[inline(always)]
+    fn handle_recv(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get socket
+        let socket = args[0] as i32;
+        
+        // Get buffer
+        let buffer = self.get_user_buffer_mut(args[1], args[2])?;
+        
+        // Perform zero-copy receive
+        self.zero_copy.recv(socket, buffer)
+    }
+    
+    // IPC operations
+    #[inline(always)]
+    fn handle_msg_send(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get destination
+        let dest = args[0] as u32;
+        
+        // Get message
+        let msg = self.get_user_buffer(args[1], args[2])?;
+        
+        // Perform zero-copy message send
+        self.zero_copy.msg_send(dest, msg)
+    }
+    
+    #[inline(always)]
+    fn handle_msg_recv(&mut self, args: &[u64]) -> Result<u64, Error> {
+        // Get source
+        let src = args[0] as u32;
+        
+        // Get buffer
+        let buffer = self.get_user_buffer_mut(args[1], args[2])?;
+        
+        // Perform zero-copy message receive
+        self.zero_copy.msg_recv(src, buffer)
+    }
+    
+    // Helper functions
+    fn get_user_buffer(&self, addr: u64, size: u64) -> Result<&[u8], Error> {
+        // Validate user buffer
+        self.validate_user_buffer(addr, size)?;
+        
+        // Create slice
+        unsafe {
+            Ok(slice::from_raw_parts(
+                addr as *const u8,
+                size as usize
+            ))
+        }
+    }
+    
+    fn get_user_buffer_mut(&self, addr: u64, size: u64) -> Result<&mut [u8], Error> {
+        // Validate user buffer
+        self.validate_user_buffer(addr, size)?;
+        
+        // Create mutable slice
+        unsafe {
+            Ok(slice::from_raw_parts_mut(
+                addr as *mut u8,
+                size as usize
+            ))
+        }
+    }
+    
+    fn validate_user_buffer(&self, addr: u64, size: u64) -> Result<(), Error> {
+        // Check alignment
+        if addr & 0x7 != 0 {
+            return Err(Error::InvalidAlignment);
+        }
+        
+        // Check address range
+        if !self.is_user_address(addr) || !self.is_user_address(addr + size) {
+            return Err(Error::InvalidAddress);
+        }
+        
+        Ok(())
+    }
+}
+
+// Zero-copy engine for system calls
+struct ZeroCopyEngine {
+    // Page mapping
+    page_map: PageMapper,
+    
+    // DMA engine
+    dma: DMAEngine,
+    
+    // Statistics
+    stats: ZeroCopyStats
+}
+
+impl ZeroCopyEngine {
+    #[inline(always)]
+    fn read(&mut self, fd: i32, buffer: &mut [u8]) -> Result<u64, Error> {
+        // Map user buffer
+        let mapping = self.page_map.map_user_buffer(buffer)?;
+        
+        // Perform DMA read
+        let count = self.dma.read(fd, mapping.as_slice())?;
+        
+        Ok(count)
+    }
+    
+    #[inline(always)]
+    fn write(&mut self, fd: i32, buffer: &[u8]) -> Result<u64, Error> {
+        // Map user buffer
+        let mapping = self.page_map.map_user_buffer(buffer)?;
+        
+        // Perform DMA write
+        let count = self.dma.write(fd, mapping.as_slice())?;
+        
+        Ok(count)
+    }
+}
+
+// Fast path optimization for system calls
+struct FastPathEngine {
+    // Fast path handlers
+    handlers: StaticVec<FastPathHandler, 32>,
+    
+    // Statistics
+    stats: FastPathStats
+}
+
+impl FastPathEngine {
+    #[inline(always)]
+    fn handle(&mut self, number: u64, args: &[u64]) -> Option<u64> {
+        // Look up handler
+        let handler = self.handlers.get(number as usize)?;
+        
+        // Execute fast path
+        handler.execute(args)
+    }
+}

@@ -1,64 +1,70 @@
 #!/bin/bash
 
 # Configuration
-LINUX_VERSION="6.6.8"  # Latest stable as of now
-LINUX_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz"
-WORK_DIR="/tmp/linux-pull"
 TARGET_DIR="/home/dae/YeonSphere/HaruOS"
+LINUX_SOURCE="${TARGET_DIR}/core/kernel/kernel-for-hardware/linux-6.12.1"
 
-# Required directories
-mkdir -p "${WORK_DIR}"
-cd "${WORK_DIR}"
+# Verify source directory exists
+if [ ! -d "${LINUX_SOURCE}" ]; then
+    echo "Error: Linux source directory not found at ${LINUX_SOURCE}"
+    exit 1
+fi
 
-# Download and extract Linux kernel
-echo "Downloading Linux kernel ${LINUX_VERSION}..."
-wget "${LINUX_URL}"
-tar xf "linux-${LINUX_VERSION}.tar.xz"
-cd "linux-${LINUX_VERSION}"
+# Create necessary directories
+echo "Creating directories..."
+sudo mkdir -p "${TARGET_DIR}/core/include/linux/device"
+sudo mkdir -p "${TARGET_DIR}/core/include/uapi/linux"
+sudo mkdir -p "${TARGET_DIR}/core/arch/x86_64/include/asm"
+sudo mkdir -p "${TARGET_DIR}/core/arch/aarch64/include/asm"
+sudo mkdir -p "${TARGET_DIR}/core/include/asm-generic"
 
-# Create target directories
-mkdir -p "${TARGET_DIR}/core/compat/linux"
-mkdir -p "${TARGET_DIR}/core/drivers/linux"
-mkdir -p "${TARGET_DIR}/core/include/linux"
-mkdir -p "${TARGET_DIR}/core/arch/aarch64/include/asm"
-mkdir -p "${TARGET_DIR}/core/arch/x86_64/include/asm"
-
-# Copy essential headers
+# Copy essential headers and their dependencies
 echo "Copying essential headers..."
-cp -r include/linux/{firmware.h,module.h,device.h,pci.h,irq.h,dma-mapping.h,\
-compiler.h,types.h,kernel.h,init.h,errno.h,string.h,bug.h} \
+# First copy device headers
+sudo cp -r ${LINUX_SOURCE}/include/linux/device/{driver.h,bus.h,class.h} \
+    "${TARGET_DIR}/core/include/linux/device/"
+
+# Then copy all other Linux headers
+sudo cp -r ${LINUX_SOURCE}/include/linux/{compiler*.h,types.h,kernel.h,init.h,errno.h,string.h,\
+bug.h,list.h,slab.h,mm.h,sched.h,wait.h,kthread.h,linkage.h,cache.h,stringify.h,\
+cpumask.h,threads.h,jump_label.h,kasan-checks.h,swait.h,completion.h,\
+dev_printk.h,uaccess.h,mmdebug.h,pgtable.h,mem_encrypt.h,device.h,\
+platform_device.h,mod_devicetable.h,module.h,firmware.h,of_device.h,\
+of.h,of_fdt.h,of_address.h,of_irq.h,of_platform.h,ioport.h,io.h,io-pgtable.h,\
+iommu.h,irq.h,dma-mapping.h,container_of.h,build_bug.h,kobject.h,args.h,\
+cleanup.h,err.h,stdarg.h} \
     "${TARGET_DIR}/core/include/linux/"
 
-# Copy architecture-specific headers
+# Copy UAPI headers
+echo "Copying UAPI headers..."
+sudo cp -r ${LINUX_SOURCE}/include/uapi/linux/{sched.h,types.h,errno.h,kernel.h} \
+    "${TARGET_DIR}/core/include/uapi/linux/"
+
+# Copy architecture headers
 echo "Copying architecture headers..."
-cp -r arch/arm64/include/asm/{io.h,memory.h,mmu.h,pgtable*.h,barrier.h} \
-    "${TARGET_DIR}/core/arch/aarch64/include/asm/"
-cp -r arch/x86/include/asm/{io.h,memory.h,mmu.h,pgtable*.h,barrier.h} \
+# x86_64
+sudo cp -r ${LINUX_SOURCE}/arch/x86/include/asm/{io.h,pgtable*.h,barrier.h,smp.h,spinlock.h,\
+cpufeatures.h,processor.h,msr.h,msr-index.h,special_insns.h,fpu/api.h,segment.h,percpu.h,\
+page.h,page_types.h,alternative.h,asm.h,cmpxchg.h,atomic.h,current.h,desc.h,div64.h,\
+extable.h} \
     "${TARGET_DIR}/core/arch/x86_64/include/asm/"
 
-# Copy firmware interface
-echo "Copying firmware interface..."
-cp -r drivers/base/firmware_loader \
-    "${TARGET_DIR}/core/drivers/linux/"
+# ARM64
+sudo cp -r ${LINUX_SOURCE}/arch/arm64/include/asm/{io.h,pgtable*.h,barrier.h,smp.h,spinlock.h,\
+alternative.h,cpufeature.h,cputype.h,sysreg.h,memory.h,page.h,page-def.h,\
+processor.h,thread_info.h,ptrace.h,percpu.h,atomic.h,cmpxchg.h,current.h} \
+    "${TARGET_DIR}/core/arch/aarch64/include/asm/"
 
-# Copy essential driver infrastructure
-echo "Copying driver infrastructure..."
-cp -r drivers/base/{base.h,dd.h,init.h,driver.h,device.h} \
-    "${TARGET_DIR}/core/drivers/linux/"
+# Copy asm-generic headers
+sudo cp -r ${LINUX_SOURCE}/include/asm-generic/{io.h,barrier.h,qspinlock*.h,atomic*.h,bug.h,rwonce.h} \
+    "${TARGET_DIR}/core/include/asm-generic/"
 
-# Copy compatibility layer components
-echo "Copying compatibility components..."
-cp -r include/linux/{compat.h,syscalls.h,fs.h,slab.h,mm.h} \
-    "${TARGET_DIR}/core/compat/linux/"
+# Create symlinks for rwonce.h
+echo "Creating architecture-specific symlinks..."
+sudo ln -sf "${TARGET_DIR}/core/include/asm-generic/rwonce.h" "${TARGET_DIR}/core/arch/x86_64/include/asm/rwonce.h"
+sudo ln -sf "${TARGET_DIR}/core/include/asm-generic/rwonce.h" "${TARGET_DIR}/core/arch/aarch64/include/asm/rwonce.h"
 
-# Create symlinks for firmware and modules
-echo "Creating symlinks..."
-ln -sf /lib/firmware "${TARGET_DIR}/firmware"
-ln -sf "/lib/modules/${LINUX_VERSION}" "${TARGET_DIR}/modules"
+# Fix permissions
+sudo chown -R $(whoami):$(whoami) "${TARGET_DIR}/core"
 
-# Clean up
-echo "Cleaning up..."
-cd /
-rm -rf "${WORK_DIR}"
-
-echo "Done! Linux kernel files have been integrated into HaruOS."
+echo "Linux kernel headers integration complete!"

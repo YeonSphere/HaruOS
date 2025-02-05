@@ -77,4 +77,4 @@ ehthumbs.db
 Thumbs.db
 
 # Kernel files
-core/kernel/kernel-for-hardware/linux-6.12.1
+/linux-*
